@@ -1,0 +1,24 @@
+#!/bin/bash
+
+for system_file in $CBLD_SYSTEM_FILES
+do
+	if [ -r $system_file ]
+	then
+		SUDO=""
+	else
+		SUDO="sudo"
+	fi
+	if [ -f $system_file ]
+	then
+		$SUDO cp $system_file $CBLD_CONTEXT
+		echo "COPY $(basename $system_file) $system_file" >> $CBLD_FINAL_FILE
+		continue
+	fi
+	if [ -d $system_file ]
+	then
+		$SUDO cp -a $system_file $CBLD_CONTEXT
+		echo "COPY $(basename $system_file) $(dirname $sytem_file)" >> $CBLD_FINAL_FILE
+	fi
+done
+
+#return 1

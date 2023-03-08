@@ -1,0 +1,24 @@
+#!/bin/bash
+
+cat > "$CBLD_CONTEXT/keep-running" <<EOF
+#!/bin/bash
+
+while true
+do
+    sleep 10000
+done
+EOF
+chmod u+x "$CBLD_CONTEXT/keep-running"
+
+#CBLD_DOCKERFILE="$CBLD_CONTEXT/Dockerfile"
+#cat > $CBLD_LAYER_FILE <<EOF
+#COPY keep-running /keep-running
+#CMD ["/keep-running"]
+#EOF
+
+cat > $CBLD_FINAL_FILE <<EOF
+COPY keep-running /keep-running
+CMD ["/keep-running"]
+EOF
+
+return 0

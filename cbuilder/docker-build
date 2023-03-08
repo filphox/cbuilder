@@ -1,0 +1,180 @@
+#!/bin/bash
+
+# Description: Docker image build tool for LSF
+# Author: Phil Fox
+# Date: 14th September 2022
+
+# Name of the Docker build file and prefix for build dirs
+DOCKERFILE="Dockerfile"
+
+# Name of the directory holding the LSF installation pkgs
+INSTALLDIR="install_files"
+
+# Name of repo on Docker Hub to push images to
+REPONAME="filphox"
+
+# Generate a menu of available builds
+echo -e "\nAvailable builds:\n"
+num_builds=$(ls -1d $DOCKERFILE* | wc -l)
+if [ $num_builds -eq 0 ]
+then
+	echo -e "\nError: no builds defined"
+	exit 1
+fi
+
+idx=0
+for build_dir in $(ls -d $DOCKERFILE*)
+do
+	build_name=$(echo $build_dir | cut -c 12-)
+	idx=$((idx + 1))
+
+	# Check Dockerfile actually exists in build directory	  
+	if [ ! -f "$build_dir/$DOCKERFILE" ]
+	then
+		echo -e "\nError: no Dockerfile found in build directory $build_dir"
+		exit 1
+	fi
+
+	if [ $idx -lt 10 ]
+	then
+		echo -n "    "
+	else
+		echo -n "   "
+	fi
+	echo -n "$idx $build_name: "
+	head -n 1 $build_dir/$DOCKERFILE | sed 's/#[ ]*//'
+done
+
+#
+# Select a build
+#
+read -r -p $'\nSelect build [1-'$idx']? ' build_num
+
+build_dir=$(ls -1d $DOCKERFILE* | head -n $build_num 2> /dev/null | tail -1 2> /dev/null)
+if [ ! -d "$build_dir" ] || [ $build_num -gt $num_builds ]
+then
+	echo -e "\nError: invalid build selection"
+	exit 1
+fi
+build_name=$(echo $build_dir | cut -c 12-)
+build_title=$(head -n 1 $build_dir/$DOCKERFILE | sed 's/#[ ]*//')
+build_desc=$(grep "^# Description" $build_dir/$DOCKERFILE | cut -c 15-)
+echo -e "\nBuild selected:\n    $build_name: $build_title"
+echo -e "\nDescription:\n    $build_desc"
+
+#
+# Select which LSF to install
+#
+#arch=$(uname -i)
+#echo -e "\nArchitecture:\n    $arch"
+#if [ "$arch" != "ppc64le" ] && [ "$arch" != "x86_64" ]
+#then
+#	echo -e "\nError: unsupported architecture"
+#	exit 1
+#fi
+#echo -e "\nAvailable LSF packages:"
+#cd $INSTALLDIR
+#num_pkgs=$(ls -1 *lsfinstall*$arch* | wc -l)
+#if [ $num_pkgs -eq 0 ]
+#then
+#	echo -e "\nError: no available LSF packages"
+#	exit 1
+#fi
+#idx=0
+#for lsf_pkg in $(ls -1 *lsfinstall*$arch*)
+#do
+#	idx=$((idx + 1))
+#	if [ $idx -lt 10 ]
+#	then
+#		echo -n "    "
+#	else
+#		echo -n "   "
+#	fi
+#	echo $idx $lsf_pkg
+#done 
+#read -r -p $'\nSelect LSF package [1-'$idx']? ' pkg_num
+#pkg_name=$(ls -1 *lsfinstall*$arch* | head -n $pkg_num 2> /dev/null | tail -1 2> /dev/null)
+#if [ $pkg_num -gt $num_pkgs ] || [ ! -f "$pkg_name" ]
+#then
+#	echo -e "\nError: invalid LSF package selection"
+#	exit 1
+#fi
+#echo -e "\nLSF package selected:\n    $pkg_name"
+
+
+#
+# Build the image
+#
+echo
+read -r -p "Build this image [y/n]? " answer
+if [ "$answer" != "y" ] && [ "$answer" != "Y" ]
+then
+	echo -e "\nBuild aborted!"
+	exit 1
+fi
+read -r -p "Enter REPOSITORY[:TAG] " repo_tag
+echo -e "\nRunning build ...\n"
+cd $build_dir
+docker build --network=host --file=$DOCKERFILE --tag $repo_tag .
+
+if [ $? -eq 0 ]
+then
+	echo -e "\nSuccessful build!\n"
+	docker images $repo_tag
+else
+	echo -e "\nBuild failed!"
+	exit 1
+fi
+
+#
+# Push image to Docker Hub
+#
+read -r -p $'\nPush new image to Docker Hub [y/n]? ' answer
+if [ "$answer" == "y" ] || [ "$answer" == "Y" ]
+then
+	docker login
+	docker image tag $repo_tag $REPONAME/$repo_tag
+	docker push $REPONAME/$repo_tag
+fi
+
+
+#
+# Start a container
+#
+read -r -p $'\nStart a container [y/n]? ' answer
+if [ "$answer" != "y" ] && [ "$answer" != "Y" ]
+then
+	exit 0
+else
+	read -r -p "Enter container name: " name
+	if [ ! -z "$name" ]
+	then
+		name="--name $name"
+	fi
+
+	echo -e "\nStarting container ...\n"
+	cont_id=$(docker run -d --rm --net=host $name $repo_tag)
+	docker ps --filter id=$cont_id
+	cont_name=$(docker ps --filter id=$cont_id | tail -1 | awk '{print $NF}')
+	echo -e "\nContainer ID: $cont_id"
+	echo "Container name: $cont_name"
+
+	#
+	# Shell into container
+	#
+
+	read -r -p $'\nShell into container [y/n]? ' answer
+	if [ "$answer" == "y" ] || [ "$answer" == "Y" ]
+	then
+		docker exec -it $cont_name /bin/bash
+	fi
+
+	read -r -p $'\nStop container [y/n]? ' answer
+	if [ "$answer" == "y" ] || [ "$answer" == "Y" ]
+	then
+		docker stop $cont_name
+	fi
+fi
+
+echo -e "\nFinished!"
+exit 0

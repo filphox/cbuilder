@@ -1,0 +1,8 @@
+#!/bin/bash
+
+layer_file="$1"
+layer_dir="$(basename $layer_file)"
+
+echo "Add NFS mount ..."
+
+return 0

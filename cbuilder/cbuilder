@@ -1,0 +1,360 @@
+#!/bin/bash
+
+# Description: Docker image build tool for LSF
+# Author: Phil Fox
+# Date: 14th September 2022
+
+
+# Default configuration
+CBLD_LAYERDIR="/var/lib/cbuilder"
+CBLD_PLATFORM="ppc64le"
+
+# Name of repo on Docker Hub to push images to
+CBLD_REPONAME="filphox"
+
+# Generate a menu of available builds
+#echo -e "\nAvailable builds:\n"
+#num_builds=$(ls -1d $DOCKERFILE* | wc -l)
+#if [ $num_builds -eq 0 ]
+#then
+#	echo -e "\nError: no builds defined"
+#	exit 1
+#fi
+
+function display_layers {
+
+	idx=0
+	echo -e "\nAvailable layers:"
+	for category in $(ls -1 $CBLD_LAYERDIR)
+	do
+		printf "\n   %s\n" $category
+		for layer in $(ls -1 $CBLD_LAYERDIR/$category)
+		do
+			if [ ! -f "$CBLD_LAYERDIR/$category/$layer/description" ]
+			then
+				continue
+			fi
+			idx=$((idx + 1))
+			printf "%4d. [%s] %s\n" "$idx" "${layer_applied[$idx]}" "${layer_title[$idx]}"
+		done
+	done
+	printf "\n%4s. %s\n" "b" "Build image"
+	printf "\n%4s. %s\n" "q" "Quit"
+
+}
+
+function apply_layer {
+
+	layer=$1
+	path="${layer_path[$layer]}"
+	title="${layer_title[$layer]}"
+	echo -e "\nApplying layer: $title [$(basename $path)]"
+	#echo "Layer: $1"
+	#echo "Path: $path"
+	#echo "Title: $title"
+	if [ -f "$path/start" ]
+	then
+		CBLD_STAGE=$(basename $path)
+		CBLD_LAYER_FILE="$CBLD_BUILD_DIR/layer.$2.$CBLD_STAGE"
+		CBLD_FINAL_FILE="$CBLD_BUILD_DIR/final.$2.$CBLD_STAGE" 
+		touch "$CBLD_LAYER_FILE" "$CBLD_FINAL_FILE"
+		source "$path/start"
+		[ $? -eq 1 ] && cleanup "Failed to apply layer"
+	else
+		cleanup "Layer 'start' not found"
+	fi
+
+}
+
+function cleanup {
+
+	echo "Error: $1"
+	if [ -d "$CBLD_BUILD_DIR" ]
+	then
+		echo "Deleting incomplete build directory"
+		#rm -rf "$CBLD_BUILD_DIR"
+	else
+		echo "Error: build dir $CBLD_BUILD_DIR not found"
+	
+	fi
+	exit 1
+}
+
+	
+
+########
+# MAIN #
+########
+
+#
+# Check that docker is installed
+#
+which docker 2>&1 > /dev/null
+if [ $? -eq 1 ]
+then
+	echo "Error: Docker not found"
+	exit 1
+fi
+
+#
+# Check for kubectl
+#
+which kubectl 2>&1 > /dev/null
+if [ $? -eq 1 ]
+then
+	echo "Warning: Kubectl not found"
+fi
+
+#
+# Source configuration files
+#
+[ -f "/etc/cbuilder.conf" ] && source "/etc/cbuilder.conf"
+[ -f "$HOME/.cbuilder/cbuilder.conf" ] && source "$HOME/.cbuilder/cbuilder.conf"
+
+# Get available images
+images=($(docker images | tail -n +2 | awk '{print $1":"$2}' | tr '\n' ' '))
+image_count=${#images[@]}
+if [ $image_count -eq 0 ]
+then
+	echo "Error: No base images available"
+	exit 1
+fi
+
+# Prepend a null entry to the images array, i.e. increase
+# all elements index by 1
+images=("null" ${images[@]})
+
+#
+# Display available base images
+#
+echo -e "\nAvailable base images:\n"
+for ((i=1; i<=$image_count; i++))
+do
+	printf "%4d. %s\n" $i ${images[$i]}
+done
+
+#
+# Select a base image
+#
+read -r -p $'\nSelect base image [1-'$image_count']? ' choice
+[[ $choice =~ ^[0-9]+$ ]] || { exit 1; }
+if [[ $choice -ge 1 && $choice -le $image_count ]]
+then
+	CBLD_BASE_IMAGE="${images[$choice]}"
+	echo -e "\nBase image selected: $CBLD_BASE_IMAGE"
+else
+	exit 1
+fi
+
+#
+# Get available layers
+#
+idx=0
+layer_path=("null")
+layer_title=("null")
+layer_applied=("null")
+for category in $(ls -1 $CBLD_LAYERDIR)
+do
+	for layer in $(ls -1 $CBLD_LAYERDIR/$category)
+	do
+		if [ ! -f "$CBLD_LAYERDIR/$category/$layer/description" ]
+		then
+			continue
+		fi
+		idx=$((idx + 1))
+		layer_path+=("$CBLD_LAYERDIR/$category/$layer")
+		layer_title+=("$(cat $CBLD_LAYERDIR/$category/$layer/description)")
+		layer_applied+=(" ")
+	done
+done
+layer_count=$idx
+
+#
+# Create build directory
+#
+mkdir -p "$HOME/.cbuilder"
+CBLD_BUILD_DIR=$(mktemp -d -p "$HOME/.cbuilder" image.XXXXXX)
+CBLD_CONTEXT="$CBLD_BUILD_DIR/context"
+CBLD_SUMMARY="$CBLD_BUILD_DIR/summary"
+mkdir -p $CBLD_CONTEXT
+echo "Build directory is: $CBLD_BUILD_DIR"
+cat > "$CBLD_SUMMARY" <<EOF
+Platform:
+    $CBLD_PLATFORM
+
+Base Image:
+    $CBLD_BASE_IMAGE
+
+Layers:
+EOF
+
+#
+# Select and apply layers
+#
+num_layers=0
+while true
+do
+	display_layers
+	read -r -p $'\nApply layer [1-'$layer_count',b,q]? ' choice
+	[ "$choice" = "q" ] && cleanup "Exiting"
+	[ "$choice" = "b" ] && break
+	[[ $choice =~ ^[0-9]+$ ]] || continue
+	if [[ $choice -ge 1 && $choice -le $layer_count ]]
+	then
+		if [ "${layer_applied[$choice]}" = "X" ]
+		then
+			echo -e "\nLayer already applied"
+		else
+			num_layers=$((num_layers + 1))
+			apply_layer $choice $num_layers
+			if [ -f "${layer_path[$choice]}/repeat" ]
+			then
+				layer_applied[$choice]="-"
+			else
+				layer_applied[$choice]="X"
+			fi
+			echo "    ${layer_title[$choice]}" >> "$CBLD_SUMMARY"
+		fi
+	fi
+done
+
+#
+# Create Dockerfile
+#
+CBLD_DOCKERFILE="$CBLD_CONTEXT/Dockerfile"
+echo "# Created $(date) on host $(hostname)" > $CBLD_DOCKERFILE
+for layer in $(ls $CBLD_BUILD_DIR/layer*)
+do
+	layer_info=($(basename $layer | tr '.' ' '))
+	if [ -s $layer ]
+	then
+		echo -e "\nFROM --platform=$CBLD_PLATFORM $CBLD_BASE_IMAGE AS ${layer_info[2]}" >> $CBLD_DOCKERFILE
+		cat $layer >> $CBLD_DOCKERFILE
+	fi
+done	
+	
+echo -e "\nFROM --platform=$CBLD_PLATFORM $CBLD_BASE_IMAGE AS final" >> $CBLD_DOCKERFILE
+for final in $(ls $CBLD_BUILD_DIR/final*)
+do
+	final_info=($(basename $final | tr '.' ' '))
+	#echo -e "\nFROM --platform=$CBLD_PLATFORM $CBLD_BASE_IMAGE AS ${layer_info[2]}" >> $CBLD_DOCKERFILE
+	if [ -s $final ]
+	then
+		cat $final >> $CBLD_DOCKERFILE
+	fi
+done	
+
+echo -e "\nBuilding image ...\n"
+read -e -r -p "Enter repository: " -i "$(echo $CBLD_BASE_IMAGE | cut -d: -f1)" repo
+read -e -r -p "Enter tag: " -i "custom" tag
+repo_tag="$repo:$tag"
+
+cd $CBLD_CONTEXT
+docker build --network=host --file=$CBLD_DOCKERFILE --tag $repo_tag .
+if [ $? -eq 0 ]
+then
+	echo -e "\nSuccessful build!\n"
+	docker images $repo_tag
+else
+	echo -e "\nBuild failed!"
+	exit 1
+fi
+
+#
+# Select which LSF to install
+#
+#arch=$(uname -i)
+#echo -e "\nArchitecture:\n    $arch"
+#if [ "$arch" != "ppc64le" ] && [ "$arch" != "x86_64" ]
+#then
+#	echo -e "\nError: unsupported architecture"
+#	exit 1
+#fi
+#echo -e "\nAvailable LSF packages:"
+#cd $INSTALLDIR
+#num_pkgs=$(ls -1 *lsfinstall*$arch* | wc -l)
+#if [ $num_pkgs -eq 0 ]
+#then
+#	echo -e "\nError: no available LSF packages"
+#	exit 1
+#fi
+#idx=0
+#for lsf_pkg in $(ls -1 *lsfinstall*$arch*)
+#do
+#	idx=$((idx + 1))
+#	if [ $idx -lt 10 ]
+#	then
+#		echo -n "    "
+#	else
+#		echo -n "   "
+#	fi
+#	echo $idx $lsf_pkg
+#done 
+#read -r -p $'\nSelect LSF package [1-'$idx']? ' pkg_num
+#pkg_name=$(ls -1 *lsfinstall*$arch* | head -n $pkg_num 2> /dev/null | tail -1 2> /dev/null)
+#if [ $pkg_num -gt $num_pkgs ] || [ ! -f "$pkg_name" ]
+#then
+#	echo -e "\nError: invalid LSF package selection"
+#	exit 1
+#fi
+#echo -e "\nLSF package selected:\n    $pkg_name"
+
+#
+# Push image to Docker Hub
+#
+read -r -p $'\nPush new image to Docker Hub [y/n]? ' answer
+if [ "$answer" == "y" ] || [ "$answer" == "Y" ]
+then
+	docker login
+	docker image tag $repo_tag $CBLD_REPONAME/$repo_tag
+	docker push $CBLD_REPONAME/$repo_tag
+fi
+
+
+#
+# Start a container
+#
+read -r -p $'\nStart a container [y/n]? ' yn 
+[[ "$yn" != "y" && "$yn" != "Y" ]] && exit 0
+
+read -e -r -p "Enter container name: " -i "testing" name
+if [ ! -z "$name" ]
+then
+	name="--name $name"
+	echo "Name: $name"
+fi
+
+echo -e "\nStarting container ...\n"
+container_id=$(docker run -d --rm --net=host $name $repo_tag)
+if [ $? -eq 0 ]
+then
+	docker ps --filter id=$container_id
+	container_name=$(docker ps --filter id=$container_id | tail -1 | awk '{print $NF}')
+	echo -e "\nContainer ID: $container_id\nContainer name: $container_name"
+else
+	echo -e "\nError: Failed to start container"
+	exit 1
+fi
+
+#
+# Shell into container
+#
+read -r -p $'\nShell into container [y/n]? ' yn 
+if [[ "$yn" = "y" || "$yn" = "Y" ]]
+then
+	docker exec -it $container_name /bin/bash
+fi
+
+read -r -p $'\nStop container [y/n]? ' yn
+if [[ "$yn" = "y" || "$yn" = "Y" ]]
+then
+	docker stop $container_name
+	read -r -p $'\nDelete container image [y/n]? ' yn
+	if [[ "$yn" = "y" || "$yn" = "Y" ]]
+	then
+		docker rmi $container_id
+	fi
+fi
+
+echo -e "\nFinished!"
+exit 0

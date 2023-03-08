@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Description: Small helper script to kick off LSF install
+# Author: Phil Fox
+# Date: Sept 14th 2022
+
+############ Configuration ######################
+# Configure LSF administrator (default: lsfadmin)
+
+LSFUSER=lsfadmin
+LSFUID=1010
+
+LSFGROUP=lsfadmin
+LSFGID=1010
+#################################################
+
+# Remove any old install directory
+install_dir="lsf10.1_lsfinstall"
+
+if [ -d $install_dir ]
+then
+    rm -rf $install_dir
+fi
+
+# Add LSF administrator
+groupadd -g $LSFGID $LSFGROUP
+useradd -d /home/$LSFUSER -g $LSFGID -u $LSFUID -m $LSFUSER
+
+install_tar=$(ls *lsfinstall*)
+echo "Install file: $install_tar"
+tar zxvf $install_tar
+
+cp server.config $install_dir/
+cd $install_dir
+./lsfinstall -s -f server.config
+
+# Automatically source profile for root and admin
+echo "source /opt/lsf/conf/profile.lsf" >> /root/.bashrc
+echo "source /opt/lsf/conf/profile.lsf" >> /home/lsfadmin/.bashrc

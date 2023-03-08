@@ -1,0 +1,90 @@
+#!/bin/bash
+
+#CBLD_UID_RANGE="5000-6000,1010-1040"
+#CBLD_GID_RANGE="$CBLD_UID_RANGE"
+
+function validate_ranges {
+
+	range_list="$1"
+
+	for range in $(echo $range_list | tr ',' ' ')
+	do
+		if [[ $range =~ ^[0-9]+-[0-9]+$ ]]
+		then
+			min=$(echo $range | awk -F- '{print $1}')
+			max=$(echo $range | awk -F- '{print $2}')
+		elif [[ $range =~ ^[0-9]+$ ]]
+		then
+			min=$range
+			max=$range
+		else
+			echo "Error: Invalid syntax for range '$range'"
+			return 1
+		fi
+		if [ $max -lt $min ]
+		then
+			tmp=$min
+			min=$max
+			max=$tmp
+		fi
+		min_values+=("$min")
+		max_values+=("$max")
+	done
+}
+
+function check_in_range {
+
+	value="$1"
+	#echo "checking value $1"
+	for ((i=0; i<${#min_values[@]}; i++))
+	do
+		#echo val $value: check range ${min_values[$i]} ${max_values[$i]}	
+		if [ $value -ge ${min_values[$i]} ] && [ $value -le ${max_values[$i]} ]
+		then
+			#echo value in range
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+# Collect users that are in range
+min_values=()
+max_values=()
+validate_ranges "$CBLD_UID_RANGE"
+
+while read -r line
+do
+	uid=$(echo $line | awk -F: '{print $3}')
+	if check_in_range $uid
+	then
+		echo "$line" >> "$CBLD_CONTEXT/passwd"
+	fi
+done < /etc/passwd
+
+# Collect groups that are in range
+min_values=()
+max_values=()
+validate_ranges "$CBLD_GID_RANGE"
+
+while read -r line
+do
+	gid=$(echo $line | awk -F: '{print $3}')
+	if check_in_range $gid
+	then
+		echo "$line" >> "$CBLD_CONTEXT/group"
+	fi
+done < /etc/group
+
+cat <<EOF > "$CBLD_LAYER_FILE"
+COPY passwd /passwd
+COPY group /group
+RUN cat /passwd >> /etc/passwd && cat /group >> /etc/group
+EOF
+
+cat <<EOF > "$CBLD_FINAL_FILE"
+COPY --from=$CBLD_STAGE /etc/passwd /etc/passwd
+COPY --from=$CBLD_STAGE /etc/group /etc/group
+EOF
+
